@@ -13,8 +13,11 @@
 #include <ctime>
 #include <iostream>
 #include <mpi.h>
-#include "pnetcdf.h"
+#include <fstream>
+//#include "pnetcdf.h"
 #include <chrono>
+#include<iomanip>
+#include<limits>
 
 constexpr double pi        = 3.14159265358979323846264338327;   //Pi
 constexpr double grav      = 9.8;                               //Gravitational acceleration (m / s^2)
@@ -112,8 +115,8 @@ void   collision            ( double x , double z , double &r , double &u , doub
 void   hydro_const_theta    ( double z                   , double &r , double &t );
 void   hydro_const_bvfreq   ( double z , double bv_freq0 , double &r , double &t );
 double sample_ellipse_cosine( double x , double z , double amp , double x0 , double z0 , double xrad , double zrad );
-void   output               ( double *state , double etime );
-void   ncwrap               ( int ierr , int line );
+//void   output               ( double *state , double etime );
+//void   ncwrap               ( int ierr , int line );
 void   perform_timestep     ( double *state , double *state_tmp , double *flux , double *tend , double dt );
 void   semi_discrete_step   ( double *state_init , double *state_forcing , double *state_out , double dt , int dir , double *flux , double *tend );
 void   compute_tendencies_x ( double *state , double *flux , double *tend , double dt);
@@ -134,7 +137,7 @@ int main(int argc, char **argv) {
   reductions(mass0,te0);
 
   //Output the initial state
-  output(state,etime);
+  // output(state,etime);
 
   ////////////////////////////////////////////////////
   // MAIN TIME STEP LOOP
@@ -153,10 +156,10 @@ int main(int argc, char **argv) {
     etime = etime + dt;
     output_counter = output_counter + dt;
     //If it's time for output, reset the counter, and do output
-    if (output_counter >= output_freq) {
-      output_counter = output_counter - output_freq;
-      output(state,etime);
-    }
+    //if (output_counter >= output_freq) {
+    //  output_counter = output_counter - output_freq;
+    //  output(state,etime);
+    //}
   }
   auto t2 = std::chrono::steady_clock::now();
   if (mainproc) {
@@ -717,7 +720,7 @@ double sample_ellipse_cosine( double x , double z , double amp , double x0 , dou
   }
 }
 
-
+#if 0
 //Output the fluid state (state) to a NetCDF file at a given elapsed model time (etime)
 //The file I/O uses parallel-netcdf, the only external library required for this mini-app.
 //If it's too cumbersome, you can comment the I/O out, but you'll miss out on some potentially cool graphics
@@ -823,6 +826,7 @@ void ncwrap( int ierr , int line ) {
     exit(-1);
   }
 }
+#endif
 
 
 void finalize() {

@@ -49,10 +49,13 @@ constexpr int DATA_SPEC_THERMAL         = 2;
 constexpr int DATA_SPEC_GRAVITY_WAVES   = 3;
 constexpr int DATA_SPEC_DENSITY_CURRENT = 5;
 constexpr int DATA_SPEC_INJECTION       = 6;
+constexpr int DATA_SPEC_ZEROS           = 7;
 
 constexpr int nqpoints = 3;
 constexpr double qpoints [] = { 0.112701665379258311482073460022E0 , 0.500000000000000000000000000000E0 , 0.887298334620741688517926539980E0 };
 constexpr double qweights[] = { 0.277777777777777777777777777779E0 , 0.444444444444444444444444444444E0 , 0.277777777777777777777777777779E0 };
+
+constexpr double weights[] = {-1.0/12, 7.0/12, 7.0/12, -1.0/12};
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // BEGIN USER-CONFIGURABLE PARAMETERS
@@ -107,6 +110,7 @@ double dmin( double a , double b ) { if (a<b) {return a;} else {return b;} };
 //Declaring the functions defined after "main"
 void   init                 ( int *argc , char ***argv );
 void   finalize             ( );
+void   zeros                ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
 void   injection            ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
 void   density_current      ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
 void   gravity_waves        ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
@@ -119,11 +123,12 @@ double sample_ellipse_cosine( double x , double z , double amp , double x0 , dou
 //void   ncwrap               ( int ierr , int line );
 void   perform_timestep     ( double *state , double *state_tmp , double *flux , double *tend , double dt );
 void   semi_discrete_step   ( double *state_init , double *state_forcing , double *state_out , double dt , int dir , double *flux , double *tend );
-void   compute_tendencies_x ( double *state , double *flux , double *tend , double dt);
+void   compute_tendencies_x ( double *state , double *flux , double *tend , double dt, const double *kernel);
 void   compute_tendencies_z ( double *state , double *flux , double *tend , double dt);
 void   set_halo_values_x    ( double *state );
 void   set_halo_values_z    ( double *state );
 void   reductions           ( double &mass , double &te );
+void test_compute_tendencies_x();
 
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -132,6 +137,8 @@ void   reductions           ( double &mass , double &te );
 int main(int argc, char **argv) {
 
   init( &argc , &argv );
+
+  test_compute_tendencies_x();
 
   //Initial reductions for mass, kinetic energy, and total energy
   reductions(mass0,te0);
@@ -219,7 +226,7 @@ void semi_discrete_step( double *state_init , double *state_forcing , double *st
     //Set the halo values for this MPI task's fluid state in the x-direction
     set_halo_values_x(state_forcing);
     //Compute the time tendencies for the fluid state in the x-direction
-    compute_tendencies_x(state_forcing,flux,tend,dt);
+    compute_tendencies_x(state_forcing,flux,tend,dt, weights);
   } else if (dir == DIR_Z) {
     //Set the halo values for this MPI task's fluid state in the z-direction
     set_halo_values_z(state_forcing);
@@ -271,7 +278,7 @@ void semi_discrete_step( double *state_init , double *state_forcing , double *st
 //Since the halos are set in a separate routine, this will not require MPI
 //First, compute the flux vector at each cell interface in the x-direction (including hyperviscosity)
 //Then, compute the tendencies using those fluxes
-void compute_tendencies_x( double *state , double *flux , double *tend , double dt) {
+void compute_tendencies_x( double *state , double *flux , double *tend , double dt, const double *kernel) {
   int    i,k,ll,s,inds,indf1,indf2,indt;
   double r,u,w,t,p, stencil[4], d3_vals[NUM_VARS], vals[NUM_VARS], hv_coef;
   //Compute the hyperviscosity coefficient
@@ -289,7 +296,7 @@ void compute_tendencies_x( double *state , double *flux , double *tend , double 
           stencil[s] = state[inds];
         }
         //Fourth-order-accurate interpolation of the state
-        vals[ll] = -stencil[0]/12 + 7*stencil[1]/12 + 7*stencil[2]/12 - stencil[3]/12;
+        vals[ll] = kernel[0]*stencil[0] + kernel[1]*stencil[1] + kernel[2]*stencil[2] + kernel[3]*stencil[3];
         //First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
         d3_vals[ll] = -stencil[0] + 3*stencil[1] - 3*stencil[2] + stencil[3];
       }
@@ -323,6 +330,110 @@ void compute_tendencies_x( double *state , double *flux , double *tend , double 
       }
     }
   }
+}
+
+void test_compute_tendencies_x(){
+  double *test_state, *test_flux, *test_tend;
+  double *test_val_x, *test_val_z;
+  size_t ind = 0, ind_val = 0;
+
+  test_state = (double *) calloc( (nx+2*hs)*(nz+2*hs)*NUM_VARS, sizeof(double) );
+  test_flux  = (double *) calloc( (nx+1)*(nz+1)*NUM_VARS, sizeof(double) );
+  test_tend  = (double *) calloc( nx*nz*NUM_VARS, sizeof(double) );
+  test_val_x = (double *) calloc( nz * (nx + 1) , sizeof(double) );
+  test_val_z = (double *) calloc( (nz + 1) * nx , sizeof(double) );
+
+  for (int ll=0; ll<NUM_VARS; ll++){
+    for (int k=0; k<nz+2*hs; k++){
+      for (int i=0; i<nx+2*hs; i++){
+        ind = ll*(nz+2*hs)*(nx+2*hs) + (k)*(nx+2*hs) + i;
+        state[ind] = ind; 
+      }
+    }
+  }
+
+  // compute_tendencies_x
+  size_t ll = 0;
+  for (int k=0; k<nz; k++) {
+    for (int i=0; i<nx+1; i++) {
+      //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+      for (int s=0; s < sten_size; s++) {
+        ind = ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + i+s;
+        ind_val = k*(nx+1) + i;
+
+        //Fourth-order-accurate interpolation of the state
+        test_val_x[ind_val] += weights[s]*state[ind];
+      }
+    }
+  }
+
+  std::ofstream out;
+  std::string filename = "convolution_x_0.txt";
+  out.open(filename);
+
+  for (int k=0; k<nz; k++){
+    for (int i=0; i<nx+1; i++){
+      ind = k*(nx+1) + i;
+      if (i == nx){
+        out << std::setprecision(9) << test_val_x[ind];
+      }
+      else{
+        out << std::setprecision(9) << test_val_x[ind] << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
+
+  // compute_tendencies_z
+  ll = 0;
+  for (int k=0; k<nz+1; k++) {
+    for (int i=0; i<nx; i++) {
+      //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+        for (int s=0; s<sten_size; s++) {
+          ind = ll*(nz+2*hs)*(nx+2*hs) + (k+s)*(nx+2*hs) + i+hs;
+          ind_val = i + k * nx;
+
+          test_val_z[ind_val] += weights[s]*state[ind];
+      }
+    }
+  }
+
+
+  filename = "convolution_z_0.txt";
+  out.open(filename);
+
+  for (int k=0; k<nz+1; k++){
+    for (int i=0; i<nx; i++){
+      ind = i + k * nx;
+      if (i == nx - 1){
+        out << std::setprecision(9) << test_val_z[ind];
+      }
+      else{
+        out << std::setprecision(9) << test_val_z[ind] << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
+
+  filename = "state_0.txt";
+  out.open(filename);
+
+  for (int k=0; k<nz+2*hs; k++){
+    for (int i=0; i<nx+2*hs; i++){
+      ind = ll*(nz+2*hs)*(nx+2*hs) + (k)*(nx+2*hs) + i;
+      if (i == nx + 2*hs - 1){
+        out << std::setprecision(9) << state[ind];
+      }
+      else{
+        out << std::setprecision(9) << state[ind] << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
+
 }
 
 
@@ -556,6 +667,7 @@ void init( int *argc , char ***argv ) {
           if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (x,z,r,u,w,t,hr,ht); }
           if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(x,z,r,u,w,t,hr,ht); }
           if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (x,z,r,u,w,t,hr,ht); }
+          if (data_spec_int == DATA_SPEC_ZEROS          ) { zeros          (x,z,r,u,w,t,hr,ht); }
 
           //Store into the fluid state array
           inds = ID_DENS*(nz+2*hs)*(nx+2*hs) + k*(nx+2*hs) + i;
@@ -586,6 +698,7 @@ void init( int *argc , char ***argv ) {
       if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (0.,z,r,u,w,t,hr,ht); }
       if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(0.,z,r,u,w,t,hr,ht); }
       if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (0.,z,r,u,w,t,hr,ht); }
+      if (data_spec_int == DATA_SPEC_ZEROS          ) { zeros          (0.,z,r,u,w,t,hr,ht); }
       hy_dens_cell      [k] = hy_dens_cell      [k] + hr    * qweights[kk];
       hy_dens_theta_cell[k] = hy_dens_theta_cell[k] + hr*ht * qweights[kk];
     }
@@ -598,6 +711,7 @@ void init( int *argc , char ***argv ) {
     if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (0.,z,r,u,w,t,hr,ht); }
     if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(0.,z,r,u,w,t,hr,ht); }
     if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (0.,z,r,u,w,t,hr,ht); }
+    if (data_spec_int == DATA_SPEC_ZEROS          ) { zeros          (0.,z,r,u,w,t,hr,ht); }
     hy_dens_int      [k] = hr;
     hy_dens_theta_int[k] = hr*ht;
     hy_pressure_int  [k] = C0*pow((hr*ht),gamm);
@@ -615,6 +729,17 @@ void injection( double x , double z , double &r , double &u , double &w , double
   t = 0.;
   u = 0.;
   w = 0.;
+}
+
+// this will just return zeros so that the state array is not updated. This function is used for testing
+// and not in production runs
+void zeros( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht ) {
+  r = 0.;
+  t = 0.;
+  u = 0.;
+  w = 0.;
+  hr = 0.0;
+  ht = 0.0;
 }
 
 

@@ -6,7 +6,7 @@ OUT_FREQ = 10
 DATA_SPEC = DATA_SPEC_THERMAL
 
 EXEC = serial.out
-FILE=miniWeather_serial_test_solver.cpp
+FILE = miniWeather_serial_test_solver.cpp
 
 ${EXEC}: ${FILE}
 	# the tragedy of life is that we use mpic++ to compile a serial code

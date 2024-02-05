@@ -300,7 +300,7 @@ void compute_tendencies_x( double *state , double *flux , double *tend , double 
           stencil[s] = state[inds];
         }
         //Fourth-order-accurate interpolation of the state
-        vals[ll] = kernel[0]*stencil[0] + kernel[1]*stencil[1] + kernel[2]*stencil[2] + kernel[3]*stencil[3];
+        vals[ll] = -stencil[0]/12 + 7.0*stencil[1]/12.0 + 7.0*stencil[2]/12 + -1.0*stencil[3]/12.0;
         //First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
         d3_vals[ll] = -stencil[0] + 3*stencil[1] - 3*stencil[2] + stencil[3];
       }

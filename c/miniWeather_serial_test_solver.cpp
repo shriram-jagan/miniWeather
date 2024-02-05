@@ -13,8 +13,11 @@
 #include <ctime>
 #include <iostream>
 #include <mpi.h>
-#include "pnetcdf.h"
+#include <fstream>
+//#include "pnetcdf.h"
 #include <chrono>
+#include<iomanip>
+#include<limits>
 
 constexpr double pi        = 3.14159265358979323846264338327;   //Pi
 constexpr double grav      = 9.8;                               //Gravitational acceleration (m / s^2)
@@ -25,8 +28,8 @@ constexpr double p0        = 1.e5;                              //Standard press
 constexpr double C0        = 27.5629410929725921310572974482;   //Constant to translate potential temperature into pressure (P=C0*(rho*theta)**gamma)
 constexpr double gamm      = 1.40027894002789400278940027894;   //gamma=cp/Rd , have to call this gamm because "gamma" is taken (I hate C so much)
 //Define domain and stability-related constants
-constexpr double xlen      = 8.0; // 2.e4;    //Length of the domain in the x-direction (meters)
-constexpr double zlen      = 7.0; // 1.e4;    //Length of the domain in the z-direction (meters)
+constexpr double xlen      = 8.0;    //Length of the domain in the x-direction (meters)
+constexpr double zlen      = 7.0;    //Length of the domain in the z-direction (meters)
 constexpr double hv_beta   = 0.05;    //How strong to diffuse the solution: hv_beta \in [0:1]
 constexpr double cfl       = 1.50;    //"Courant, Friedrichs, Lewy" number (for numerical stability)
 constexpr double max_speed = 450;     //Assumed maximum wave speed during the simulation (speed of sound + speed of wind) (meter / sec)
@@ -46,10 +49,13 @@ constexpr int DATA_SPEC_THERMAL         = 2;
 constexpr int DATA_SPEC_GRAVITY_WAVES   = 3;
 constexpr int DATA_SPEC_DENSITY_CURRENT = 5;
 constexpr int DATA_SPEC_INJECTION       = 6;
+constexpr int DATA_SPEC_ZEROS           = 7;
 
 constexpr int nqpoints = 3;
 constexpr double qpoints [] = { 0.112701665379258311482073460022E0 , 0.500000000000000000000000000000E0 , 0.887298334620741688517926539980E0 };
 constexpr double qweights[] = { 0.277777777777777777777777777779E0 , 0.444444444444444444444444444444E0 , 0.277777777777777777777777777779E0 };
+
+constexpr double weights[] = {-1.0/12, 7.0/12, 7.0/12, -1.0/12};
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // BEGIN USER-CONFIGURABLE PARAMETERS
@@ -92,10 +98,6 @@ double *state;                //Fluid state.             Dimensions: (1-hs:nx+hs
 double *state_tmp;            //Fluid state.             Dimensions: (1-hs:nx+hs,1-hs:nz+hs,NUM_VARS)
 double *flux;                 //Cell interface fluxes.   Dimensions: (nx+1,nz+1,NUM_VARS)
 double *tend;                 //Fluid state tendencies.  Dimensions: (nx,nz,NUM_VARS)
-double *sendbuf_l;            //Buffer to send data to the left MPI rank
-double *sendbuf_r;            //Buffer to send data to the right MPI rank
-double *recvbuf_l;            //Buffer to receive data from the left MPI rank
-double *recvbuf_r;            //Buffer to receive data from the right MPI rank
 int    num_out = 0;           //The number of outputs performed so far
 int    direction_switch = 1;
 double mass0, te0;            //Initial domain totals for mass and total energy  
@@ -108,6 +110,7 @@ double dmin( double a , double b ) { if (a<b) {return a;} else {return b;} };
 //Declaring the functions defined after "main"
 void   init                 ( int *argc , char ***argv );
 void   finalize             ( );
+void   zeros                ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
 void   injection            ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
 void   density_current      ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
 void   gravity_waves        ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht );
@@ -116,8 +119,8 @@ void   collision            ( double x , double z , double &r , double &u , doub
 void   hydro_const_theta    ( double z                   , double &r , double &t );
 void   hydro_const_bvfreq   ( double z , double bv_freq0 , double &r , double &t );
 double sample_ellipse_cosine( double x , double z , double amp , double x0 , double z0 , double xrad , double zrad );
-void   output               ( double *state , double etime );
-void   ncwrap               ( int ierr , int line );
+//void   output               ( double *state , double etime );
+//void   ncwrap               ( int ierr , int line );
 void   perform_timestep     ( double *state , double *state_tmp , double *flux , double *tend , double dt );
 void   semi_discrete_step   ( double *state_init , double *state_forcing , double *state_out , double dt , int dir , double *flux , double *tend );
 void   compute_tendencies_x ( double *state , double *flux , double *tend , double dt);
@@ -125,6 +128,10 @@ void   compute_tendencies_z ( double *state , double *flux , double *tend , doub
 void   set_halo_values_x    ( double *state );
 void   set_halo_values_z    ( double *state );
 void   reductions           ( double &mass , double &te );
+void test_compute_tendencies_x();
+void dump_variables();
+void dump_state();
+void dump_flux();
 
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -138,7 +145,7 @@ int main(int argc, char **argv) {
   reductions(mass0,te0);
 
   //Output the initial state
-  output(state,etime);
+  // output(state,etime);
 
   ////////////////////////////////////////////////////
   // MAIN TIME STEP LOOP
@@ -157,15 +164,18 @@ int main(int argc, char **argv) {
     etime = etime + dt;
     output_counter = output_counter + dt;
     //If it's time for output, reset the counter, and do output
-    if (output_counter >= output_freq) {
-      output_counter = output_counter - output_freq;
-      output(state,etime);
-    }
+    //if (output_counter >= output_freq) {
+    //  output_counter = output_counter - output_freq;
+    //  output(state,etime);
+    //}
   }
   auto t2 = std::chrono::steady_clock::now();
   if (mainproc) {
     std::cout << "CPU Time: " << std::chrono::duration<double>(t2-t1).count() << " sec\n";
   }
+
+  // dump state at the end
+  dump_variables();
 
   //Final reductions for mass, kinetic energy, and total energy
   reductions(mass,te);
@@ -290,7 +300,7 @@ void compute_tendencies_x( double *state , double *flux , double *tend , double 
           stencil[s] = state[inds];
         }
         //Fourth-order-accurate interpolation of the state
-        vals[ll] = -stencil[0]/12 + 7*stencil[1]/12 + 7*stencil[2]/12 - stencil[3]/12;
+        vals[ll] = kernel[0]*stencil[0] + kernel[1]*stencil[1] + kernel[2]*stencil[2] + kernel[3]*stencil[3];
         //First-order-accurate interpolation of the third spatial derivative of the state (for artificial viscosity)
         d3_vals[ll] = -stencil[0] + 3*stencil[1] - 3*stencil[2] + stencil[3];
       }
@@ -301,6 +311,10 @@ void compute_tendencies_x( double *state , double *flux , double *tend , double 
       w = vals[ID_WMOM] / r;
       t = ( vals[ID_RHOT] + hy_dens_theta_cell[k+hs] ) / r;
       p = C0*pow((r*t),gamm);
+
+      if (t < 0.0 || r < 0.0) {
+        std::cout <<"Found values less than zero, t: " << t << ", r: " << r << std::endl;
+      }
 
       //Compute the flux vector
       flux[ID_DENS*(nz+1)*(nx+1) + k*(nx+1) + i] = r*u     - hv_coef*d3_vals[ID_DENS];
@@ -324,6 +338,125 @@ void compute_tendencies_x( double *state , double *flux , double *tend , double 
       }
     }
   }
+}
+
+void test_compute_tendencies_x(){
+  double *test_state, *test_flux, *test_tend;
+  double *test_val_x, *test_val_z;
+  size_t ind = 0, ind_val = 0;
+
+  test_state = (double *) calloc( (nx+2*hs)*(nz+2*hs)*NUM_VARS, sizeof(double) );
+  test_flux  = (double *) calloc( (nx+1)*(nz+1)*NUM_VARS, sizeof(double) );
+  test_tend  = (double *) calloc( nx*nz*NUM_VARS, sizeof(double) );
+  test_val_x = (double *) calloc( nz * (nx + 1) , sizeof(double) );
+  test_val_z = (double *) calloc( (nz + 1) * nx , sizeof(double) );
+
+  for (int ll=0; ll<NUM_VARS; ll++){
+    for (int k=0; k<nz+2*hs; k++){
+      for (int i=0; i<nx+2*hs; i++){
+        ind = ll*(nz+2*hs)*(nx+2*hs) + (k)*(nx+2*hs) + i;
+        state[ind] = ind; 
+      }
+    }
+  }
+
+  // compute_tendencies_x
+  size_t ll = 0;
+  for (int k=0; k<nz; k++) {
+    for (int i=0; i<nx+1; i++) {
+      //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+      for (int s=0; s < sten_size; s++) {
+        ind = ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + i+s;
+        ind_val = k*(nx+1) + i;
+
+        //Fourth-order-accurate interpolation of the state
+        test_val_x[ind_val] += weights[s]*state[ind];
+      }
+    }
+  }
+
+  std::ofstream out;
+  std::string filename = "convolution_x_0.txt";
+  out.open(filename);
+
+  for (int k=0; k<nz; k++){
+    for (int i=0; i<nx+1; i++){
+      ind = k*(nx+1) + i;
+      if (i == nx){
+        out << std::setprecision(9) << test_val_x[ind];
+      }
+      else{
+        out << std::setprecision(9) << test_val_x[ind] << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
+
+  // compute_tendencies_z
+  ll = 0;
+  for (int k=0; k<nz+1; k++) {
+    for (int i=0; i<nx; i++) {
+      //Use fourth-order interpolation from four cell averages to compute the value at the interface in question
+        for (int s=0; s<sten_size; s++) {
+          ind = ll*(nz+2*hs)*(nx+2*hs) + (k+s)*(nx+2*hs) + i+hs;
+          ind_val = i + k * nx;
+
+          test_val_z[ind_val] += weights[s]*state[ind];
+      }
+    }
+  }
+
+
+  filename = "convolution_z_0.txt";
+  out.open(filename);
+
+  for (int k=0; k<nz+1; k++){
+    for (int i=0; i<nx; i++){
+      ind = i + k * nx;
+      if (i == nx - 1){
+        out << std::setprecision(9) << test_val_z[ind];
+      }
+      else{
+        out << std::setprecision(9) << test_val_z[ind] << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
+
+  dump_state();
+
+}
+
+void dump_state(){
+  int i, k, ll;
+
+  std::ofstream out;
+  std::string filename = "state_0.txt";
+
+  out.open(filename);
+
+  ll = 0;
+  for (int k=0; k<nz+2*hs; k++){
+    for (int i=0; i<nx+2*hs; i++){
+      int ind = ll*(nz+2*hs)*(nx+2*hs) + (k)*(nx+2*hs) + i;
+      if (i == nx + 2*hs - 1){
+        out << std::setprecision(9) << state[ind];
+      }
+      else{
+        out << std::setprecision(9) << state[ind] << ",";
+      }
+    }
+    out << "\n";
+  }
+  out.close();
+}
+
+
+void dump_variables()
+{
+  dump_state();
 }
 
 
@@ -395,45 +528,31 @@ void compute_tendencies_z( double *state , double *flux , double *tend , double 
 }
 
 
+
 //Set this MPI task's halo values in the x-direction. This routine will require MPI
 void set_halo_values_x( double *state ) {
-  int k, ll, ind_r, ind_u, ind_t, i, s, ierr;
+  int k, ll, ind_r, ind_u, ind_t, i;
   double z;
-  MPI_Request req_r[2], req_s[2];
+  ////////////////////////////////////////////////////////////////////////
+  // TODO: EXCHANGE HALO VALUES WITH NEIGHBORING MPI TASKS
+  // (1) give    state(1:hs,1:nz,1:NUM_VARS)       to   my left  neighbor
+  // (2) receive state(1-hs:0,1:nz,1:NUM_VARS)     from my left  neighbor
+  // (3) give    state(nx-hs+1:nx,1:nz,1:NUM_VARS) to   my right neighbor
+  // (4) receive state(nx+1:nx+hs,1:nz,1:NUM_VARS) from my right neighbor
+  ////////////////////////////////////////////////////////////////////////
 
-  //Prepost receives
-  ierr = MPI_Irecv(recvbuf_l,hs*nz*NUM_VARS,MPI_DOUBLE, left_rank,0,MPI_COMM_WORLD,&req_r[0]);
-  ierr = MPI_Irecv(recvbuf_r,hs*nz*NUM_VARS,MPI_DOUBLE,right_rank,1,MPI_COMM_WORLD,&req_r[1]);
-
-  //Pack the send buffers
+  //////////////////////////////////////////////////////
+  // DELETE THE SERIAL CODE BELOW AND REPLACE WITH MPI
+  //////////////////////////////////////////////////////
   for (ll=0; ll<NUM_VARS; ll++) {
     for (k=0; k<nz; k++) {
-      for (s=0; s<hs; s++) {
-        sendbuf_l[ll*nz*hs + k*hs + s] = state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + hs+s];
-        sendbuf_r[ll*nz*hs + k*hs + s] = state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + nx+s];
-      }
+      state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + 0      ] = state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + nx+hs-2];
+      state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + 1      ] = state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + nx+hs-1];
+      state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + nx+hs  ] = state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + hs     ];
+      state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + nx+hs+1] = state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + hs+1   ];
     }
   }
-
-  //Fire off the sends
-  ierr = MPI_Isend(sendbuf_l,hs*nz*NUM_VARS,MPI_DOUBLE, left_rank,1,MPI_COMM_WORLD,&req_s[0]);
-  ierr = MPI_Isend(sendbuf_r,hs*nz*NUM_VARS,MPI_DOUBLE,right_rank,0,MPI_COMM_WORLD,&req_s[1]);
-
-  //Wait for receives to finish
-  ierr = MPI_Waitall(2,req_r,MPI_STATUSES_IGNORE);
-
-  //Unpack the receive buffers
-  for (ll=0; ll<NUM_VARS; ll++) {
-    for (k=0; k<nz; k++) {
-      for (s=0; s<hs; s++) {
-        state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + s      ] = recvbuf_l[ll*nz*hs + k*hs + s];
-        state[ll*(nz+2*hs)*(nx+2*hs) + (k+hs)*(nx+2*hs) + nx+hs+s] = recvbuf_r[ll*nz*hs + k*hs + s];
-      }
-    }
-  }
-
-  //Wait for sends to finish
-  ierr = MPI_Waitall(2,req_s,MPI_STATUSES_IGNORE);
+  ////////////////////////////////////////////////////
 
   if (data_spec_int == DATA_SPEC_INJECTION) {
     if (myrank == 0) {
@@ -487,21 +606,28 @@ void set_halo_values_z( double *state ) {
 
 
 void init( int *argc , char ***argv ) {
-  int    i, k, ii, kk, ll, ierr, inds, i_end;
-  double x, z, r, u, w, t, hr, ht, nper;
+  int    i, k, ii, kk, ll, ierr, inds;
+  double x, z, r, u, w, t, hr, ht;
 
   ierr = MPI_Init(argc,argv);
 
-  ierr = MPI_Comm_size(MPI_COMM_WORLD,&nranks);
-  ierr = MPI_Comm_rank(MPI_COMM_WORLD,&myrank);
-  nper = ( (double) nx_glob ) / nranks;
-  i_beg = round( nper* (myrank)    );
-  i_end = round( nper*((myrank)+1) )-1;
-  nx = i_end - i_beg + 1;
-  left_rank  = myrank - 1;
-  if (left_rank == -1) left_rank = nranks-1;
-  right_rank = myrank + 1;
-  if (right_rank == nranks) right_rank = 0;
+  /////////////////////////////////////////////////////////////
+  // BEGIN MPI DUMMY SECTION
+  // TODO: (1) GET NUMBER OF MPI RANKS
+  //       (2) GET MY MPI RANK ID (RANKS ARE ZERO-BASED INDEX)
+  //       (3) COMPUTE MY BEGINNING "I" INDEX (1-based index)
+  //       (4) COMPUTE HOW MANY X-DIRECTION CELLS MY RANK HAS
+  //       (5) FIND MY LEFT AND RIGHT NEIGHBORING RANK IDs
+  /////////////////////////////////////////////////////////////
+  nranks = 1;
+  myrank = 0;
+  i_beg = 0;
+  nx = nx_glob;
+  left_rank = 0;
+  right_rank = 0;
+  //////////////////////////////////////////////
+  // END MPI DUMMY SECTION
+  //////////////////////////////////////////////
 
 
   ////////////////////////////////////////////////////////////////////////////////
@@ -525,10 +651,6 @@ void init( int *argc , char ***argv ) {
   hy_dens_int        = (double *) malloc( (nz+1)*sizeof(double) );
   hy_dens_theta_int  = (double *) malloc( (nz+1)*sizeof(double) );
   hy_pressure_int    = (double *) malloc( (nz+1)*sizeof(double) );
-  sendbuf_l          = (double *) malloc( hs*nz*NUM_VARS*sizeof(double) );
-  sendbuf_r          = (double *) malloc( hs*nz*NUM_VARS*sizeof(double) );
-  recvbuf_l          = (double *) malloc( hs*nz*NUM_VARS*sizeof(double) );
-  recvbuf_r          = (double *) malloc( hs*nz*NUM_VARS*sizeof(double) );
 
   //Define the maximum stable time step based on an assumed maximum wind speed
   dt = dmin(dx,dz) / max_speed * cfl;
@@ -568,6 +690,7 @@ void init( int *argc , char ***argv ) {
           if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (x,z,r,u,w,t,hr,ht); }
           if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(x,z,r,u,w,t,hr,ht); }
           if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (x,z,r,u,w,t,hr,ht); }
+          if (data_spec_int == DATA_SPEC_ZEROS          ) { zeros          (x,z,r,u,w,t,hr,ht); }
 
           //Store into the fluid state array
           inds = ID_DENS*(nz+2*hs)*(nx+2*hs) + k*(nx+2*hs) + i;
@@ -598,6 +721,7 @@ void init( int *argc , char ***argv ) {
       if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (0.,z,r,u,w,t,hr,ht); }
       if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(0.,z,r,u,w,t,hr,ht); }
       if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (0.,z,r,u,w,t,hr,ht); }
+      if (data_spec_int == DATA_SPEC_ZEROS          ) { zeros          (0.,z,r,u,w,t,hr,ht); }
       hy_dens_cell      [k] = hy_dens_cell      [k] + hr    * qweights[kk];
       hy_dens_theta_cell[k] = hy_dens_theta_cell[k] + hr*ht * qweights[kk];
     }
@@ -610,6 +734,7 @@ void init( int *argc , char ***argv ) {
     if (data_spec_int == DATA_SPEC_GRAVITY_WAVES  ) { gravity_waves  (0.,z,r,u,w,t,hr,ht); }
     if (data_spec_int == DATA_SPEC_DENSITY_CURRENT) { density_current(0.,z,r,u,w,t,hr,ht); }
     if (data_spec_int == DATA_SPEC_INJECTION      ) { injection      (0.,z,r,u,w,t,hr,ht); }
+    if (data_spec_int == DATA_SPEC_ZEROS          ) { zeros          (0.,z,r,u,w,t,hr,ht); }
     hy_dens_int      [k] = hr;
     hy_dens_theta_int[k] = hr*ht;
     hy_pressure_int  [k] = C0*pow((hr*ht),gamm);
@@ -627,6 +752,17 @@ void injection( double x , double z , double &r , double &u , double &w , double
   t = 0.;
   u = 0.;
   w = 0.;
+}
+
+// this will just return zeros so that the state array is not updated. This function is used for testing
+// and not in production runs
+void zeros( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht ) {
+  r = 0.;
+  t = 0.;
+  u = 0.;
+  w = 0.;
+  hr = 0.0;
+  ht = 0.0;
 }
 
 
@@ -647,7 +783,7 @@ void density_current( double x , double z , double &r , double &u , double &w , 
 //x and z are input coordinates at which to sample
 //r,u,w,t are output density, u-wind, w-wind, and potential temperature at that location
 //hr and ht are output background hydrostatic density and potential temperature at that location
-void gravity_waves ( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht ) {
+void gravity_waves( double x , double z , double &r , double &u , double &w , double &t , double &hr , double &ht ) {
   hydro_const_bvfreq(z,0.02,hr,ht);
   r = 0.;
   t = 0.;
@@ -732,7 +868,7 @@ double sample_ellipse_cosine( double x , double z , double amp , double x0 , dou
   }
 }
 
-
+#if 0
 //Output the fluid state (state) to a NetCDF file at a given elapsed model time (etime)
 //The file I/O uses parallel-netcdf, the only external library required for this mini-app.
 //If it's too cumbersome, you can comment the I/O out, but you'll miss out on some potentially cool graphics
@@ -838,6 +974,7 @@ void ncwrap( int ierr , int line ) {
     exit(-1);
   }
 }
+#endif
 
 
 void finalize() {
@@ -851,10 +988,6 @@ void finalize() {
   free( hy_dens_int );
   free( hy_dens_theta_int );
   free( hy_pressure_int );
-  free( sendbuf_l );
-  free( sendbuf_r );
-  free( recvbuf_l );
-  free( recvbuf_r );
   ierr = MPI_Finalize();
 }
 

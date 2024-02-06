@@ -1,12 +1,11 @@
-NX = 8
-NZ = 7
-SIM_TIME = 10 # 100
-OUT_FREQ = 10
-#DATA_SPEC = DATA_SPEC_ZEROS 
+NX = 200
+NZ = 100
+SIM_TIME = 10
+OUT_FREQ = 1
 DATA_SPEC = DATA_SPEC_THERMAL
 
 EXEC = serial.out
-FILE = miniWeather_serial_test_solver.cpp
+FILE = miniWeather_serial.cpp
 
 ${EXEC}: ${FILE}
 	# the tragedy of life is that we use mpic++ to compile a serial code

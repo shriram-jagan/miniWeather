@@ -12,9 +12,12 @@
 #include <stdio.h>
 #include <ctime>
 #include <iostream>
+#include <fstream>
 #include <mpi.h>
 //#include "pnetcdf.h"
 #include <chrono>
+
+using namespace std;
 
 constexpr double pi        = 3.14159265358979323846264338327;   //Pi
 constexpr double grav      = 9.8;                               //Gravitational acceleration (m / s^2)
@@ -112,6 +115,7 @@ void   collision            ( double x , double z , double &r , double &u , doub
 void   hydro_const_theta    ( double z                   , double &r , double &t );
 void   hydro_const_bvfreq   ( double z , double bv_freq0 , double &r , double &t );
 double sample_ellipse_cosine( double x , double z , double amp , double x0 , double z0 , double xrad , double zrad );
+void   output               ( double *state , double etime );
 void   perform_timestep     ( double *state , double *state_tmp , double *flux , double *tend , double dt );
 void   semi_discrete_step   ( double *state_init , double *state_forcing , double *state_out , double dt , int dir , double *flux , double *tend );
 void   compute_tendencies_x ( double *state , double *flux , double *tend , double dt);
@@ -132,7 +136,7 @@ int main(int argc, char **argv) {
   reductions(mass0,te0);
 
   //Output the initial state
-  // output(state,etime);
+  output(state,etime);
 
   ////////////////////////////////////////////////////
   // MAIN TIME STEP LOOP
@@ -151,6 +155,10 @@ int main(int argc, char **argv) {
     etime = etime + dt;
     output_counter = output_counter + dt;
     //If it's time for output, reset the counter, and do output
+    if (output_counter >= output_freq) {
+      output_counter = output_counter - output_freq;
+      output(state,etime);
+    }
   }
   auto t2 = std::chrono::steady_clock::now();
   if (mainproc) {
@@ -711,14 +719,45 @@ double sample_ellipse_cosine( double x , double z , double amp , double x0 , dou
   }
 }
 
+void write_state(double *state, std::ofstream &out){
+  int i, k, ll;
 
-//Output the fluid state (state) to a NetCDF file at a given elapsed model time (etime)
-//The file I/O uses parallel-netcdf, the only external library required for this mini-app.
-//If it's too cumbersome, you can comment the I/O out, but you'll miss out on some potentially cool graphics
+  for (ll=0; ll<NUM_VARS; ll++){
+    out << "# variable-index " << ll << endl;
+    for (int k=0; k<nz+2*hs; k++){
+      for (int i=0; i<nx+2*hs; i++){
+        int ind = ll*(nz+2*hs)*(nx+2*hs) + (k)*(nx+2*hs) + i;
+        if (i == nx + 2*hs - 1){
+          out << std::setprecision(9) << state[ind];
+        }
+        else{
+          out << std::setprecision(9) << state[ind] << ",";
+        }
+      }
+      out << "\n";
+    }
+  }
+}
 
+// write to a text file
+// shape of this file in numpy would be 
+// (ntimesteps, nvariables, nz+2*hs, nx+2*hs)
+// 2D slices of shape (nz+2*hs, nx+2*hs) will be written
+// ntimesteps * nvariables times
+void output(double *state, double etime){
 
-//Error reporting routine for the PNetCDF I/O
-
+  std::string filename("state.txt");
+  std::ofstream out;
+  out.open(filename, ios::app);
+  if (etime == 0){
+    out << "# nx " << nx << endl;
+    out << "# nz " << nz << endl;
+    out << "# hs " << hs << endl;
+    out << "# nvariables " << NUM_VARS << endl; 
+  }
+  out << "# time: " << std::setprecision(9) << etime << endl;
+  write_state(state, out);
+}
 
 void finalize() {
   int ierr;

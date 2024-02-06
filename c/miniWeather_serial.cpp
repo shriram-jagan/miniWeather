@@ -746,7 +746,7 @@ void write_state(double *state, std::ofstream &out){
 // ntimesteps * nvariables times
 void output(double *state, double etime){
 
-  std::string filename("state.txt");
+  std::string filename("state_cpp.txt");
   std::ofstream out;
   out.open(filename, ios::app);
   if (etime == 0){
